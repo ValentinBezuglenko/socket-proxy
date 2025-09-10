@@ -1,35 +1,56 @@
 import express from "express";
+import { createServer } from "http";
+import { Server } from "socket.io";
 import { WebSocketServer } from "ws";
-import { io } from "socket.io-client";
+import { io as Client } from "socket.io-client";
 
 const app = express();
-const PORT = process.env.PORT || 10000;
+const server = createServer(app);
 
-// Запускаем WebSocket-сервер для ESP32
-const wss = new WebSocketServer({ port: PORT });
-console.log(`✅ WebSocket proxy запущен на порту ${PORT}`);
+// Клиенты ESP32 будут подключаться сюда по WebSocket
+const wss = new WebSocketServer({ server });
 
-// Подключаемся к твоему бекенду (Socket.IO)
-const socket = io("ws://backend.enia-kids.ru:8025", {
-  transports: ["websocket"]
-});
+// Подключаемся к твоему основному бекенду
+const backend = Client("wss://backend.enia-kids.ru/socket.io/?EIO=4&transport=websocket");
 
-socket.on("connect", () => {
-  console.log("🟢 Подключено к backend.enia-kids.ru");
-});
+// Храним подключённых ESP32
+let clients = [];
 
-socket.on("disconnect", () => {
-  console.log("🔴 Отключено от backend.enia-kids.ru");
-});
+wss.on("connection", (ws) => {
+  console.log("📡 ESP32 подключен");
+  clients.push(ws);
 
-// Слушаем события игры
-socket.on("/child/game-level/action", (msg) => {
-  console.log("📩 Событие:", msg);
-
-  // Пересылаем всем ESP32-клиентам
-  wss.clients.forEach((client) => {
-    if (client.readyState === 1) {
-      client.send(JSON.stringify(msg));
-    }
+  ws.on("close", () => {
+    clients = clients.filter((c) => c !== ws);
+    console.log("❌ ESP32 отключен");
   });
+});
+
+// Пришло событие от бекенда
+backend.on("connect", () => {
+  console.log("✅ Подключен к backend");
+});
+
+backend.on("message", (msg) => {
+  try {
+    const data = JSON.parse(msg);
+
+    // Берём только поле "type" и маппим
+    let mapped = null;
+    if (data.type === "success") mapped = "happy";
+    if (data.type === "fail") mapped = "sad";
+    if (data.type === "completed") mapped = "angry";
+
+    if (mapped) {
+      console.log("➡️ Отправляем ESP32:", mapped);
+      clients.forEach((c) => c.send(mapped));
+    }
+  } catch (e) {
+    console.error("Ошибка обработки сообщения:", e);
+  }
+});
+
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => {
+  console.log(`🌐 Proxy запущен на порту ${PORT}`);
 });
